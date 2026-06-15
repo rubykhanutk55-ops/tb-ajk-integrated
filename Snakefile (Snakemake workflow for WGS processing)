@@ -1,0 +1,98 @@
+# Snakefile – WGS processing for M. tuberculosis
+# Requires config.yaml with sample list and reference paths
+
+configfile: "config.yaml"
+
+rule all:
+    input:
+        expand("results/variants/{sample}.g.vcf.gz", sample=config["samples"]),
+        "results/joint/all_samples.vcf.gz",
+        "results/lineages.tsv",
+        "results/resistance.tsv",
+        "results/phylogeny/raxml_bestTree.nwk"
+
+rule fastqc:
+    input: "raw_fastq/{sample}_R{read}.fastq.gz"
+    output: "qc/{sample}_R{read}_fastqc.html"
+    wrapper: "0.99.0/bio/fastqc"
+
+rule trimmomatic:
+    input:
+        r1 = "raw_fastq/{sample}_R1.fastq.gz",
+        r2 = "raw_fastq/{sample}_R2.fastq.gz"
+    output:
+        r1 = "trimmed/{sample}_R1_pe.fastq.gz",
+        r2 = "trimmed/{sample}_R2_pe.fastq.gz",
+        r1_unpaired = "trimmed/{sample}_R1_se.fastq.gz",
+        r2_unpaired = "trimmed/{sample}_R2_se.fastq.gz"
+    params:
+        adapters = "adapters/TruSeq3-PE.fa",
+        extra = "LEADING:20 TRAILING:20 SLIDINGWINDOW:4:20 MINLEN:36"
+    wrapper: "0.99.0/bio/trimmomatic"
+
+rule bwa_mem2:
+    input:
+        r1 = "trimmed/{sample}_R1_pe.fastq.gz",
+        r2 = "trimmed/{sample}_R2_pe.fastq.gz"
+    output: "aligned/{sample}.bam"
+    params:
+        ref = "ref/H37Rv.fasta"
+    shell:
+        "bwa-mem2 mem -t 4 {params.ref} {input.r1} {input.r2} | "
+        "samtools sort -o {output} -"
+
+rule mark_duplicates:
+    input: "aligned/{sample}.bam"
+    output: "aligned/{sample}.dedup.bam"
+    params:
+        metrics = "aligned/{sample}.metrics.txt"
+    shell:
+        "gatk MarkDuplicates -I {input} -O {output} -M {params.metrics}"
+
+rule haplotype_caller:
+    input: "aligned/{sample}.dedup.bam"
+    output: "variants/{sample}.g.vcf.gz"
+    params:
+        ref = "ref/H37Rv.fasta"
+    shell:
+        "gatk HaplotypeCaller -R {params.ref} -I {input} -O {output} -ERC GVCF"
+
+rule combine_gvcfs:
+    input: expand("variants/{sample}.g.vcf.gz", sample=config["samples"])
+    output: "joint/combined.g.vcf.gz"
+    shell:
+        "gatk CombineGVCFs -R ref/H37Rv.fasta -V {input} -O {output}"
+
+rule genotype_gvcfs:
+    input: "joint/combined.g.vcf.gz"
+    output: "joint/all_samples.vcf.gz"
+    shell:
+        "gatk GenotypeGVCFs -R ref/H37Rv.fasta -V {input} -O {output}"
+
+rule filter_variants:
+    input: "joint/all_samples.vcf.gz"
+    output: "joint/filtered.vcf.gz"
+    shell:
+        "gatk VariantFiltration -R ref/H37Rv.fasta -V {input} -O {output} "
+        "--filter-expression 'QD < 2.0' --filter-name 'QD2' "
+        "--filter-expression 'FS > 60.0' --filter-name 'FS60' "
+        "--filter-expression 'MQ < 40.0' --filter-name 'MQ40' "
+        "--filter-expression 'SOR > 3.0' --filter-name 'SOR3'"
+
+rule tbprofiler_lineage:
+    input: "joint/filtered.vcf.gz"
+    output: "results/lineages.tsv"
+    shell:
+        "tb-profiler lineage -v {input} -o {output}"
+
+rule tbprofiler_resistance:
+    input: "joint/filtered.vcf.gz"
+    output: "results/resistance.tsv"
+    shell:
+        "tb-profiler profile -v {input} -o {output}"
+
+rule iqtree:
+    input: "results/alignment.fasta"
+    output: "results/phylogeny/iqtree.treefile"
+    shell:
+        "iqtree -s {input} -m GTR+F+G4 -B 1000 -pre results/phylogeny/iqtree"
