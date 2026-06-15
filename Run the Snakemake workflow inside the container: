@@ -1,1 +1,6 @@
 docker run -v $(pwd):/workspace tb-ajk snakemake --cores 4
+
+
+To reproduce all figures, execute the notebooks and scripts in order.
+
+All synthetic data used in the scripts are generated on the fly and match the summary statistics reported in the manuscript.
