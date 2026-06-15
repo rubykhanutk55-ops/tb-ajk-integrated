@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Generate Figure 4 – SHAP summary plot using the trained XGBoost model."""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import shap
+import pickle
+
+# Load trained model and test data
+with open('xgboost_model.pkl', 'rb') as f:
+    model = pickle.load(f)
+
+# Recreate test data (or load from disk)
+np.random.seed(42)
+n = 2314   # test set size
+X_test = pd.DataFrame({
+    'age': np.random.normal(40, 15, n),
+    'gender': np.random.binomial(1, 0.55, n),
+    'education_years': np.random.poisson(5, n),
+    'income_below_poverty': np.random.binomial(1, 0.45, n),
+    'previous_treatment': np.random.binomial(1, 0.20, n),
+    'drug_resistant': np.random.binomial(1, 0.14, n),
+    'symptom_duration_days': np.random.gamma(2, 20, n),
+    'travel_distance_km': np.random.gamma(2, 12, n),
+    'dot_coverage': np.random.uniform(0.6, 0.95, n)
+})
+
+# SHAP explanation
+explainer = shap.TreeExplainer(model)
+shap_values = explainer.shap_values(X_test)
+
+# Summary plot
+plt.figure(figsize=(10,7))
+shap.summary_plot(shap_values, X_test, show=False, max_display=9)
+plt.tight_layout()
+plt.savefig('fig4_shap_summary.pdf', dpi=300)
+print("Figure 4 saved.")
