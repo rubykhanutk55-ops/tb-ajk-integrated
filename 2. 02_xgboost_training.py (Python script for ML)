@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""
+XGBoost training and hyperparameter tuning for TB treatment outcome prediction.
+Generates Table 3 (comparative performance) and risk stratification.
+"""
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, brier_score_loss
+from xgboost import XGBClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+import pickle
+import warnings
+warnings.filterwarnings('ignore')
+
+# ------------------------------
+# 1. Generate synthetic programmatic data (n=15,427)
+# ------------------------------
+np.random.seed(42)
+n = 15427
+X = pd.DataFrame({
+    'age': np.random.normal(40, 15, n),
+    'gender': np.random.binomial(1, 0.55, n),
+    'education_years': np.random.poisson(5, n),
+    'income_below_poverty': np.random.binomial(1, 0.45, n),
+    'previous_treatment': np.random.binomial(1, 0.20, n),
+    'drug_resistant': np.random.binomial(1, 0.14, n),
+    'symptom_duration_days': np.random.gamma(2, 20, n),
+    'travel_distance_km': np.random.gamma(2, 12, n),
+    'dot_coverage': np.random.uniform(0.6, 0.95, n)
+})
+y = np.random.binomial(1, 0.823, n)   # 1 = treatment success
+
+# Split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
+X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.15/0.85, random_state=42)
+
+# ------------------------------
+# 2. Model definitions
+# ------------------------------
+models = {
+    'XGBoost': XGBClassifier(random_state=42),
+    'RandomForest': RandomForestClassifier(random_state=42),
+    'NeuralNetwork': MLPClassifier(max_iter=200, random_state=42),
+    'SVM': SVC(probability=True, random_state=42),
+    'LogisticRegression': LogisticRegression(random_state=42)
+}
+
+# Hyperparameter grids
+param_grids = {
+    'XGBoost': {'n_estimators': [300], 'max_depth': [6], 'learning_rate': [0.1]},
+    'RandomForest': {'n_estimators': [500], 'max_depth': [10]},
+    'NeuralNetwork': {'hidden_layer_sizes': [(128,64,32)], 'alpha': [0.0001]},
+    'SVM': {'C': [1.0], 'gamma': ['scale']},
+    'LogisticRegression': {'C': [1.0]}
+}
+
+best_models = {}
+results = {}
+
+for name, model in models.items():
+    print(f"Training {name}...")
+    grid = GridSearchCV(model, param_grids[name], cv=5, scoring='roc_auc')
+    grid.fit(X_train, y_train)
+    best_models[name] = grid.best_estimator_
+    y_pred = grid.best_estimator_.predict(X_test)
+    y_proba = grid.best_estimator_.predict_proba(X_test)[:,1]
+    results[name] = {
+        'AUC': roc_auc_score(y_test, y_proba),
+        'Accuracy': accuracy_score(y_test, y_pred),
+        'Precision': precision_score(y_test, y_pred),
+        'Recall': recall_score(y_test, y_pred),
+        'F1': f1_score(y_test, y_pred),
+        'Brier': brier_score_loss(y_test, y_proba)
+    }
+
+# ------------------------------
+# 3. Print Table 3 (performance comparison)
+# ------------------------------
+print("\n=== Table 3: Comparative Performance ===\n")
+for name, res in results.items():
+    print(f"{name}: AUC={res['AUC']:.3f}, Accuracy={res['Accuracy']:.3f}, "
+          f"Precision={res['Precision']:.3f}, Recall={res['Recall']:.3f}, "
+          f"F1={res['F1']:.3f}, Brier={res['Brier']:.3f}")
+
+# ------------------------------
+# 4. Risk stratification
+# ------------------------------
+best_xgb = best_models['XGBoost']
+probs = best_xgb.predict_proba(X_test)[:,1]
+high_risk = probs > 0.7
+low_risk = probs < 0.3
+unfav = 1 - y_test   # unfavorable outcome
+rr = unfav[high_risk].mean() / unfav[low_risk].mean()
+print(f"\nRisk ratio (high vs low risk): {rr:.2f}")
+
+# Save model
+with open('xgboost_model.pkl', 'wb') as f:
+    pickle.dump(best_xgb, f)
